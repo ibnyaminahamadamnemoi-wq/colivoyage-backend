@@ -7,24 +7,43 @@ const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
-// ============ MIDDLEWARE ============
+// ============================================
+// MIDDLEWARE
+// ============================================
 app.use(cors({
     origin: '*',
     credentials: true
 }));
 app.use(bodyParser.json());
 
-// ============ CLIENTS ============
+// ============================================
+// SUPABASE CONFIGURATION
+// ============================================
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_SERVICE_KEY
 );
 
-// PayPal Configuration
+// ============================================
+// PAYPAL CONFIGURATION
+// ============================================
 const paypalEnv = process.env.PAYPAL_MODE === 'live'
     ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_SECRET)
     : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_SECRET);
 const paypalClient = new paypal.core.PayPalHttpClient(paypalEnv);
+
+// ============================================
+// 📧 RESEND CONFIGURATION
+// ============================================
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+let resendStatus = '❌ Non configuré';
+
+if (RESEND_API_KEY) {
+    resendStatus = '✅ Configuré';
+    console.log('✅ Resend configuré');
+} else {
+    console.log('⚠️ Resend non configuré');
+}
 
 // ============================================
 // 🏠 ROUTE TEST
@@ -32,14 +51,24 @@ const paypalClient = new paypal.core.PayPalHttpClient(paypalEnv);
 app.get('/', (req, res) => {
     res.json({
         status: '✅ ColiVoyage API is running!',
-        version: '1.0.0',
+        version: '2.0.0',
         message: 'Backend opérationnel 🚀',
+        services: {
+            supabase: process.env.SUPABASE_URL ? '✅ Connected' : '❌ Not configured',
+            paypal: process.env.PAYPAL_CLIENT_ID ? '✅ Configured' : '❌ Not configured',
+            resend: resendStatus
+        },
         endpoints: [
             'GET /',
             'GET /api/health',
+            'POST /api/auth/email',
+            'POST /api/auth/verify-email-code',
             'POST /api/paypal/create-order',
             'POST /api/paypal/capture',
             'GET /api/user/:userId',
+            'GET /api/user/by-phone/:phone',
+            'POST /api/user',
+            'PUT /api/user/:userId',
             'GET /api/trajets',
             'POST /api/trajets',
             'GET /api/colis',
@@ -50,6 +79,136 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ============================================
+// 📧 LOGIN PAR EMAIL - Code via RESEND
+// ============================================
+app.post('/api/auth/email', async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+    if (!RESEND_API_KEY) return res.status(503).json({ error: 'Resend non configuré' });
+    
+    try {
+        const { email } = req.body;
+        
+        if (!email || !email.includes('@')) {
+            return res.status(400).json({ error: 'Email invalide' });
+        }
+        
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        console.log(`📧 Génération code pour ${email}: ${code}`);
+        
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+        
+        await supabase.from('otp_codes').insert({
+            email: email,
+            code: code,
+            expires_at: expiresAt.toISOString(),
+            used: false
+        });
+        
+        const emailResponse = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${RESEND_API_KEY}`
+            },
+            body: JSON.stringify({
+                from: 'ColiVoyage <onboarding@resend.dev>',
+                to: [email],
+                subject: `🔐 Ton code ColiVoyage : ${code}`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+                        <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 12px 12px 0 0;">
+                            <h1 style="color: white; margin: 0;">✈️ ColiVoyage</h1>
+                        </div>
+                        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 12px 12px;">
+                            <h2 style="color: #333;">Bienvenue ! 👋</h2>
+                            <p style="color: #666; font-size: 16px;">Voici ton code de connexion :</p>
+                            <div style="background: white; padding: 20px; text-align: center; border-radius: 12px; margin: 20px 0; border: 2px dashed #6366f1;">
+                                <div style="font-size: 36px; font-weight: bold; color: #6366f1; letter-spacing: 8px;">
+                                    ${code}
+                                </div>
+                            </div>
+                            <p style="color: #666; font-size: 14px;">
+                                ⏱️ Ce code expire dans <strong>10 minutes</strong>.
+                            </p>
+                        </div>
+                    </div>
+                `
+            })
+        });
+        
+        const emailData = await emailResponse.json();
+        
+        if (!emailResponse.ok) {
+            console.error('❌ Erreur Resend:', emailData);
+            return res.status(500).json({ error: 'Erreur envoi email' });
+        }
+        
+        console.log('✅ Email envoyé:', emailData.id);
+        res.json({ success: true, message: 'Code envoyé ! 📧' });
+        
+    } catch (error) {
+        console.error('❌ Erreur serveur:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// 🔐 VÉRIFIER LE CODE EMAIL
+// ============================================
+app.post('/api/auth/verify-email-code', async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+    
+    try {
+        const { email, code } = req.body;
+        
+        if (!email || !code) {
+            return res.status(400).json({ error: 'Email et code requis' });
+        }
+        
+        console.log(`🔐 Vérification code pour ${email}: ${code}`);
+        
+        const { data: otpData, error: otpError } = await supabase
+            .from('otp_codes')
+            .select('*')
+            .eq('email', email)
+            .eq('code', code)
+            .eq('used', false)
+            .gte('expires_at', new Date().toISOString())
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        
+        if (otpError || !otpData) {
+            return res.status(401).json({ error: 'Code invalide ou expiré' });
+        }
+        
+        await supabase.from('otp_codes').update({ used: true }).eq('id', otpData.id);
+        
+        let { data: user } = await supabase
+            .from('users')
+            .select('*')
+            .eq('email', email)
+            .maybeSingle();
+        
+        if (!user) {
+            const { data: newUser } = await supabase
+                .from('users')
+                .insert({ email: email, name: email.split('@')[0] })
+                .select()
+                .single();
+            user = newUser;
+        }
+        
+        console.log('✅ Utilisateur connecté:', user.email);
+        res.json({ success: true, user: user });
+        
+    } catch (error) {
+        console.error('❌ Erreur:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============================================
@@ -65,10 +224,7 @@ app.post('/api/paypal/create-order', async (req, res) => {
         request.requestBody({
             intent: 'CAPTURE',
             purchase_units: [{
-                amount: {
-                    currency_code: 'EUR',
-                    value: amount
-                },
+                amount: { currency_code: 'EUR', value: amount },
                 description: `ColiVoyage Premium ${plan === 'monthly' ? 'Mensuel' : 'Annuel'}`,
                 custom_id: userId || 'anonymous'
             }],
@@ -82,7 +238,6 @@ app.post('/api/paypal/create-order', async (req, res) => {
 
         const order = await paypalClient.execute(request);
 
-        // Enregistrement du paiement en attente
         if (userId) {
             await supabase.from('payments').insert({
                 user_id: userId,
@@ -96,11 +251,7 @@ app.post('/api/paypal/create-order', async (req, res) => {
             });
         }
 
-        res.json({
-            id: order.result.id,
-            links: order.result.links,
-            success: true
-        });
+        res.json({ id: order.result.id, links: order.result.links, success: true });
     } catch (error) {
         console.error('PayPal error:', error);
         res.status(500).json({ error: error.message, success: false });
@@ -108,7 +259,7 @@ app.post('/api/paypal/create-order', async (req, res) => {
 });
 
 // ============================================
-// 🅿️ PAYPAL - CAPTURER (Confirmer le paiement)
+// 🅿️ PAYPAL - CAPTURER
 // ============================================
 app.post('/api/paypal/capture', async (req, res) => {
     try {
@@ -118,7 +269,6 @@ app.post('/api/paypal/capture', async (req, res) => {
         const capture = await paypalClient.execute(request);
 
         if (capture.result.status === 'COMPLETED') {
-            // Active Premium
             const premiumUntil = new Date();
             if (plan === 'monthly') {
                 premiumUntil.setMonth(premiumUntil.getMonth() + 1);
@@ -134,18 +284,13 @@ app.post('/api/paypal/capture', async (req, res) => {
                     premium_until: premiumUntil.toISOString()
                 }).eq('id', userId);
 
-                await supabase.from('payments').update({
-                    status: 'completed'
-                }).eq('transaction_id', orderId);
+                await supabase.from('payments').update({ status: 'completed' }).eq('transaction_id', orderId);
             }
 
             console.log(`✅ Premium activé pour ${userId} - Plan: ${plan}`);
         }
 
-        res.json({
-            status: capture.result.status,
-            success: true
-        });
+        res.json({ status: capture.result.status, success: true });
     } catch (error) {
         console.error('PayPal capture error:', error);
         res.status(500).json({ error: error.message, success: false });
@@ -165,6 +310,30 @@ app.get('/api/user/:userId', async (req, res) => {
 
         if (error) return res.status(404).json({ error: 'Utilisateur non trouvé' });
         res.json(user);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/user/by-phone/:phone', async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+    
+    try {
+        const phone = req.params.phone;
+        console.log('🔍 Recherche user par phone:', phone);
+        
+        const { data, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('phone', phone)
+            .maybeSingle();
+        
+        if (error) return res.status(500).json({ error: error.message });
+        if (!data) return res.status(404).json({ error: 'Utilisateur non trouvé' });
+        
+        console.log('✅ Utilisateur trouvé:', data);
+        res.json(data);
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -271,235 +440,18 @@ app.post('/api/colis', async (req, res) => {
 });
 
 // ============================================
-// 🚀 DÉMARRAGE SERVEUR
+// 🚀 DÉMARRAGE SERVEUR (À LA FIN !)
 // ============================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 ColiVoyage Backend running on port ${PORT}`);
+    console.log('');
+    console.log('╔══════════════════════════════════════╗');
+    console.log('║   🚀 ColiVoyage Backend v2.0.0       ║');
+    console.log(`║   Port: ${PORT}                          ║`);
+    console.log('╚══════════════════════════════════════╝');
     console.log(`📡 Frontend URL: ${process.env.FRONTEND_URL || 'Not set'}`);
     console.log(`💾 Supabase: ${process.env.SUPABASE_URL ? '✅ Connected' : '❌ Not configured'}`);
-    console.log(`🅿️ PayPal: ${process.env.PAYPAL_CLIENT_ID ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`🅿️  PayPal:  ${process.env.PAYPAL_CLIENT_ID ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`📧 Resend:  ${resendStatus}`);
+    console.log('');
 });
-
-
-
-
-
-
-
-
-
-// ============================================
-// 📧 LOGIN PAR EMAIL - Code de vérification via RESEND
-// ============================================
-app.post('/api/auth/email', async (req, res) => {
-    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
-    if (!RESEND_API_KEY) return res.status(503).json({ error: 'Resend non configuré' });
-    
-    try {
-        const { email } = req.body;
-        
-        if (!email || !email.includes('@')) {
-            return res.status(400).json({ error: 'Email invalide' });
-        }
-        
-        // Générer un code à 6 chiffres
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
-        
-        console.log(`📧 Génération code pour ${email}: ${code}`);
-        
-        // Sauvegarder le code en base (table otp_codes)
-        const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-        
-        await supabase.from('otp_codes').insert({
-            email: email,
-            code: code,
-            expires_at: expiresAt.toISOString(),
-            used: false
-        });
-        
-        // Envoyer l'email via Resend
-        const emailResponse = await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${RESEND_API_KEY}`
-            },
-            body: JSON.stringify({
-                from: 'ColiVoyage <onboarding@resend.dev>',
-                to: [email],
-                subject: `🔐 Ton code ColiVoyage : ${code}`,
-                html: `
-                    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
-                        <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 12px 12px 0 0;">
-                            <h1 style="color: white; margin: 0;">✈️ ColiVoyage</h1>
-                        </div>
-                        
-                        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 12px 12px;">
-                            <h2 style="color: #333;">Bienvenue ! 👋</h2>
-                            <p style="color: #666; font-size: 16px;">
-                                Voici ton code de connexion :
-                            </p>
-                            
-                            <div style="background: white; padding: 20px; text-align: center; border-radius: 12px; margin: 20px 0; border: 2px dashed #6366f1;">
-                                <div style="font-size: 36px; font-weight: bold; color: #6366f1; letter-spacing: 8px;">
-                                    ${code}
-                                </div>
-                            </div>
-                            
-                            <p style="color: #666; font-size: 14px;">
-                                ⏱️ Ce code expire dans <strong>10 minutes</strong>.
-                            </p>
-                            
-                            <p style="color: #999; font-size: 12px; margin-top: 30px;">
-                                Si tu n'as pas demandé ce code, ignore cet email.
-                            </p>
-                        </div>
-                        
-                        <div style="text-align: center; padding: 20px; color: #999; font-size: 12px;">
-                            © 2026 ColiVoyage - Transport de colis entre particuliers
-                        </div>
-                    </div>
-                `
-            })
-        });
-        
-        const emailData = await emailResponse.json();
-        
-        if (!emailResponse.ok) {
-            console.error('❌ Erreur Resend:', emailData);
-            return res.status(500).json({ error: 'Erreur envoi email: ' + (emailData.message || 'Unknown') });
-        }
-        
-        console.log('✅ Email envoyé:', emailData.id);
-        
-        res.json({ 
-            success: true, 
-            message: 'Code envoyé ! Vérifie ta boîte mail 📧'
-        });
-        
-    } catch (error) {
-        console.error('❌ Erreur serveur:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ============================================
-// 🔐 VÉRIFIER LE CODE EMAIL
-// ============================================
-app.post('/api/auth/verify-email-code', async (req, res) => {
-    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
-    
-    try {
-        const { email, code } = req.body;
-        
-        if (!email || !code) {
-            return res.status(400).json({ error: 'Email et code requis' });
-        }
-        
-        console.log(`🔐 Vérification code pour ${email}: ${code}`);
-        
-        // Chercher le code en base
-        const { data: otpData, error: otpError } = await supabase
-            .from('otp_codes')
-            .select('*')
-            .eq('email', email)
-            .eq('code', code)
-            .eq('used', false)
-            .gte('expires_at', new Date().toISOString())
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-        
-        if (otpError || !otpData) {
-            return res.status(401).json({ error: 'Code invalide ou expiré' });
-        }
-        
-        // Marquer le code comme utilisé
-        await supabase
-            .from('otp_codes')
-            .update({ used: true })
-            .eq('id', otpData.id);
-        
-        // Créer ou récupérer l'utilisateur
-        let { data: user } = await supabase
-            .from('users')
-            .select('*')
-            .eq('email', email)
-            .maybeSingle();
-        
-        if (!user) {
-            const { data: newUser } = await supabase
-                .from('users')
-                .insert({
-                    email: email,
-                    name: email.split('@')[0]
-                })
-                .select()
-                .single();
-            user = newUser;
-        }
-        
-        console.log('✅ Utilisateur connecté:', user.email);
-        
-        res.json({
-            success: true,
-            user: user
-        });
-        
-    } catch (error) {
-        console.error('❌ Erreur:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ============================================
-// 📞 RECHERCHER UTILISATEUR PAR TÉLÉPHONE
-// ============================================
-app.get('/api/user/by-phone/:phone', async (req, res) => {
-    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
-    
-    try {
-        const phone = req.params.phone;
-        console.log('🔍 Recherche user par phone:', phone);
-        
-        const { data, error } = await supabase
-            .from('users')
-            .select('*')
-            .eq('phone', phone)
-            .maybeSingle();
-        
-        if (error) {
-            console.error('❌ Erreur:', error);
-            return res.status(500).json({ error: error.message });
-        }
-        
-        if (!data) {
-            return res.status(404).json({ error: 'Utilisateur non trouvé' });
-        }
-        
-        console.log('✅ Utilisateur trouvé:', data);
-        res.json(data);
-        
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-
-
-
-// ============================================
-// 📧 RESEND CONFIGURATION
-// ============================================
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-let resendStatus = '❌ Non configuré';
-
-if (RESEND_API_KEY) {
-    resendStatus = '✅ Configuré';
-    console.log('✅ Resend configuré');
-} else {
-    console.log('⚠️ Resend non configuré');
-}
-
-
