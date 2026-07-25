@@ -290,41 +290,165 @@ app.listen(PORT, () => {
 
 
 // ============================================
-// 📧 LOGIN AVEC EMAIL (Magic Link)
+// 📧 LOGIN PAR EMAIL - Code de vérification via RESEND
 // ============================================
 app.post('/api/auth/email', async (req, res) => {
     if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+    if (!RESEND_API_KEY) return res.status(503).json({ error: 'Resend non configuré' });
     
     try {
         const { email } = req.body;
         
-        if (!email) {
-            return res.status(400).json({ error: 'Email requis' });
+        if (!email || !email.includes('@')) {
+            return res.status(400).json({ error: 'Email invalide' });
         }
         
-        console.log('📧 Envoi magic link à:', email);
+        // Générer un code à 6 chiffres
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
         
-        // Envoyer un magic link via Supabase Auth
-        const { data, error } = await supabase.auth.signInWithOtp({
+        console.log(`📧 Génération code pour ${email}: ${code}`);
+        
+        // Sauvegarder le code en base (table otp_codes)
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+        
+        await supabase.from('otp_codes').insert({
             email: email,
-            options: {
-                emailRedirectTo: process.env.FRONTEND_URL || 'https://colivoyage-odx8.vercel.app'
-            }
+            code: code,
+            expires_at: expiresAt.toISOString(),
+            used: false
         });
         
-        if (error) {
-            console.error('❌ Erreur Supabase Auth:', error);
-            return res.status(500).json({ error: error.message });
+        // Envoyer l'email via Resend
+        const emailResponse = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${RESEND_API_KEY}`
+            },
+            body: JSON.stringify({
+                from: 'ColiVoyage <onboarding@resend.dev>',
+                to: [email],
+                subject: `🔐 Ton code ColiVoyage : ${code}`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+                        <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 12px 12px 0 0;">
+                            <h1 style="color: white; margin: 0;">✈️ ColiVoyage</h1>
+                        </div>
+                        
+                        <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 12px 12px;">
+                            <h2 style="color: #333;">Bienvenue ! 👋</h2>
+                            <p style="color: #666; font-size: 16px;">
+                                Voici ton code de connexion :
+                            </p>
+                            
+                            <div style="background: white; padding: 20px; text-align: center; border-radius: 12px; margin: 20px 0; border: 2px dashed #6366f1;">
+                                <div style="font-size: 36px; font-weight: bold; color: #6366f1; letter-spacing: 8px;">
+                                    ${code}
+                                </div>
+                            </div>
+                            
+                            <p style="color: #666; font-size: 14px;">
+                                ⏱️ Ce code expire dans <strong>10 minutes</strong>.
+                            </p>
+                            
+                            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+                                Si tu n'as pas demandé ce code, ignore cet email.
+                            </p>
+                        </div>
+                        
+                        <div style="text-align: center; padding: 20px; color: #999; font-size: 12px;">
+                            © 2026 ColiVoyage - Transport de colis entre particuliers
+                        </div>
+                    </div>
+                `
+            })
+        });
+        
+        const emailData = await emailResponse.json();
+        
+        if (!emailResponse.ok) {
+            console.error('❌ Erreur Resend:', emailData);
+            return res.status(500).json({ error: 'Erreur envoi email: ' + (emailData.message || 'Unknown') });
         }
         
-        console.log('✅ Magic link envoyé');
+        console.log('✅ Email envoyé:', emailData.id);
+        
         res.json({ 
             success: true, 
-            message: 'Vérifie ta boîte mail ! 📧' 
+            message: 'Code envoyé ! Vérifie ta boîte mail 📧'
         });
         
     } catch (error) {
         console.error('❌ Erreur serveur:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// 🔐 VÉRIFIER LE CODE EMAIL
+// ============================================
+app.post('/api/auth/verify-email-code', async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+    
+    try {
+        const { email, code } = req.body;
+        
+        if (!email || !code) {
+            return res.status(400).json({ error: 'Email et code requis' });
+        }
+        
+        console.log(`🔐 Vérification code pour ${email}: ${code}`);
+        
+        // Chercher le code en base
+        const { data: otpData, error: otpError } = await supabase
+            .from('otp_codes')
+            .select('*')
+            .eq('email', email)
+            .eq('code', code)
+            .eq('used', false)
+            .gte('expires_at', new Date().toISOString())
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        
+        if (otpError || !otpData) {
+            return res.status(401).json({ error: 'Code invalide ou expiré' });
+        }
+        
+        // Marquer le code comme utilisé
+        await supabase
+            .from('otp_codes')
+            .update({ used: true })
+            .eq('id', otpData.id);
+        
+        // Créer ou récupérer l'utilisateur
+        let { data: user } = await supabase
+            .from('users')
+            .select('*')
+            .eq('email', email)
+            .maybeSingle();
+        
+        if (!user) {
+            const { data: newUser } = await supabase
+                .from('users')
+                .insert({
+                    email: email,
+                    name: email.split('@')[0]
+                })
+                .select()
+                .single();
+            user = newUser;
+        }
+        
+        console.log('✅ Utilisateur connecté:', user.email);
+        
+        res.json({
+            success: true,
+            user: user
+        });
+        
+    } catch (error) {
+        console.error('❌ Erreur:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -361,3 +485,21 @@ app.get('/api/user/by-phone/:phone', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+
+
+
+// ============================================
+// 📧 RESEND CONFIGURATION
+// ============================================
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+let resendStatus = '❌ Non configuré';
+
+if (RESEND_API_KEY) {
+    resendStatus = '✅ Configuré';
+    console.log('✅ Resend configuré');
+} else {
+    console.log('⚠️ Resend non configuré');
+}
+
+
