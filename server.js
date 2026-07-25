@@ -280,3 +280,84 @@ app.listen(PORT, () => {
     console.log(`💾 Supabase: ${process.env.SUPABASE_URL ? '✅ Connected' : '❌ Not configured'}`);
     console.log(`🅿️ PayPal: ${process.env.PAYPAL_CLIENT_ID ? '✅ Configured' : '❌ Not configured'}`);
 });
+
+
+
+
+
+
+
+
+
+// ============================================
+// 📧 LOGIN AVEC EMAIL (Magic Link)
+// ============================================
+app.post('/api/auth/email', async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+    
+    try {
+        const { email } = req.body;
+        
+        if (!email) {
+            return res.status(400).json({ error: 'Email requis' });
+        }
+        
+        console.log('📧 Envoi magic link à:', email);
+        
+        // Envoyer un magic link via Supabase Auth
+        const { data, error } = await supabase.auth.signInWithOtp({
+            email: email,
+            options: {
+                emailRedirectTo: process.env.FRONTEND_URL || 'https://colivoyage-odx8.vercel.app'
+            }
+        });
+        
+        if (error) {
+            console.error('❌ Erreur Supabase Auth:', error);
+            return res.status(500).json({ error: error.message });
+        }
+        
+        console.log('✅ Magic link envoyé');
+        res.json({ 
+            success: true, 
+            message: 'Vérifie ta boîte mail ! 📧' 
+        });
+        
+    } catch (error) {
+        console.error('❌ Erreur serveur:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// 📞 RECHERCHER UTILISATEUR PAR TÉLÉPHONE
+// ============================================
+app.get('/api/user/by-phone/:phone', async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+    
+    try {
+        const phone = req.params.phone;
+        console.log('🔍 Recherche user par phone:', phone);
+        
+        const { data, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('phone', phone)
+            .maybeSingle();
+        
+        if (error) {
+            console.error('❌ Erreur:', error);
+            return res.status(500).json({ error: error.message });
+        }
+        
+        if (!data) {
+            return res.status(404).json({ error: 'Utilisateur non trouvé' });
+        }
+        
+        console.log('✅ Utilisateur trouvé:', data);
+        res.json(data);
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
