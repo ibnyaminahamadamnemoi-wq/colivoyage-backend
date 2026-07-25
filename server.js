@@ -1,198 +1,316 @@
-require('dotenv').config();
+// ============================================
+// COLIVOYAGE BACKEND - server.js
+// Version 2.0 - Code propre
+// ============================================
+
 const express = require('express');
 const cors = require('cors');
-const bodyParser = require('body-parser');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
-// ============ MIDDLEWARE ============
-app.use(cors({ origin: '*', credentials: true }));
-app.use(bodyParser.json());
+// ============================================
+// MIDDLEWARE
+// ============================================
+app.use(cors({
+  origin: '*',
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// ============ CLIENTS (Version robuste) ============
+// ============================================
+// SUPABASE (initialisation sécurisée)
+// ============================================
 let supabase = null;
-let paypalClient = null;
-let paypal = null;
+let supabaseStatus = '❌ Non configuré';
 
-// Supabase - Ne crash pas si non configuré
-try {
-    if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
-        const { createClient } = require('@supabase/supabase-js');
-        supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-        console.log('✅ Supabase connecté');
-    } else {
-        console.log('⚠️ Supabase non configuré - variables manquantes');
-        console.log('   SUPABASE_URL:', process.env.SUPABASE_URL ? 'présent' : 'MANQUANT');
-        console.log('   SUPABASE_SERVICE_KEY:', process.env.SUPABASE_SERVICE_KEY ? 'présent' : 'MANQUANT');
-    }
-} catch (error) {
+if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  try {
+    supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+    supabaseStatus = '✅ Connecté';
+    console.log('✅ Supabase connecté');
+  } catch (error) {
+    supabaseStatus = '❌ Erreur : ' + error.message;
     console.log('❌ Erreur Supabase:', error.message);
-}
-
-// PayPal - Ne crash pas si non configuré
-try {
-    if (process.env.PAYPAL_CLIENT_ID && process.env.PAYPAL_SECRET) {
-        paypal = require('@paypal/checkout-server-sdk');
-        const paypalEnv = process.env.PAYPAL_MODE === 'live'
-            ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_SECRET)
-            : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_SECRET);
-        paypalClient = new paypal.core.PayPalHttpClient(paypalEnv);
-        console.log('✅ PayPal connecté');
-    } else {
-        console.log('⚠️ PayPal non configuré');
-    }
-} catch (error) {
-    console.log('❌ Erreur PayPal:', error.message);
+  }
+} else {
+  console.log('⚠️ Supabase non configuré');
+  console.log('   SUPABASE_URL:', process.env.SUPABASE_URL ? 'OK' : 'MANQUANT');
+  console.log('   SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? 'OK' : 'MANQUANT');
 }
 
 // ============================================
-// 🏠 ROUTE TEST
+// PAYPAL (configuration)
+// ============================================
+const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
+const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
+const PAYPAL_MODE = process.env.PAYPAL_MODE || 'sandbox';
+const PAYPAL_BASE_URL = PAYPAL_MODE === 'live'
+  ? 'https://api-m.paypal.com'
+  : 'https://api-m.sandbox.paypal.com';
+
+let paypalStatus = '❌ Non configuré';
+if (PAYPAL_CLIENT_ID && PAYPAL_SECRET) {
+  paypalStatus = `✅ Configuré (${PAYPAL_MODE})`;
+  console.log(`✅ PayPal configuré en mode ${PAYPAL_MODE}`);
+} else {
+  console.log('⚠️ PayPal non configuré');
+}
+
+// ============================================
+// ROUTE PRINCIPALE (page d'accueil)
 // ============================================
 app.get('/', (req, res) => {
-    res.json({
-        status: '✅ ColiVoyage API is running!',
-        version: '1.0.0',
-        message: 'Backend opérationnel 🚀',
-        services: {
-            supabase: supabase ? '✅ Connected' : '❌ Not configured',
-            paypal: paypalClient ? '✅ Connected' : '❌ Not configured'
-        },
-        env_check: {
-            SUPABASE_URL: process.env.SUPABASE_URL ? 'set' : 'missing',
-            SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY ? 'set' : 'missing',
-            PAYPAL_CLIENT_ID: process.env.PAYPAL_CLIENT_ID ? 'set' : 'missing',
-            PAYPAL_SECRET: process.env.PAYPAL_SECRET ? 'set' : 'missing',
-            FRONTEND_URL: process.env.FRONTEND_URL || 'missing',
-            PORT: process.env.PORT || 3000
-        }
-    });
-});
-
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: '🟢 ColiVoyage Backend opérationnel',
+    version: '2.0.0',
+    timestamp: new Date().toISOString(),
+    services: {
+      supabase: supabaseStatus,
+      paypal: paypalStatus
+    },
+    env_check: {
+      SUPABASE_URL: process.env.SUPABASE_URL ? 'OK' : 'MANQUANT',
+      SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ? 'OK' : 'MANQUANT',
+      PAYPAL_CLIENT_ID: process.env.PAYPAL_CLIENT_ID ? 'OK' : 'MANQUANT',
+      PAYPAL_SECRET: process.env.PAYPAL_SECRET ? 'OK' : 'MANQUANT',
+      PAYPAL_MODE: process.env.PAYPAL_MODE || 'sandbox (défaut)'
+    }
+  });
 });
 
 // ============================================
-// 🅿️ PAYPAL - CRÉER UNE COMMANDE
+// ROUTE HEALTH CHECK
+// ============================================
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    uptime: process.uptime(),
+    supabase: supabaseStatus,
+    paypal: paypalStatus
+  });
+});
+
+// ============================================
+// PAYPAL - Fonction helper pour obtenir token
+// ============================================
+async function getPayPalToken() {
+  const response = await fetch(`${PAYPAL_BASE_URL}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': 'Basic ' + Buffer.from(
+        `${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`
+      ).toString('base64')
+    },
+    body: 'grant_type=client_credentials'
+  });
+  const data = await response.json();
+  return data.access_token;
+}
+
+// ============================================
+// PAYPAL - Créer une commande
 // ============================================
 app.post('/api/paypal/create-order', async (req, res) => {
-    if (!paypalClient) return res.status(503).json({ error: 'PayPal non configuré' });
-    try {
-        const { plan, userId } = req.body;
-        const amount = plan === 'monthly' ? '2.49' : '9.99';
+  if (!PAYPAL_CLIENT_ID || !PAYPAL_SECRET) {
+    return res.status(503).json({ error: 'PayPal non configuré' });
+  }
 
-        const request = new paypal.orders.OrdersCreateRequest();
-        request.prefer("return=representation");
-        request.requestBody({
-            intent: 'CAPTURE',
-            purchase_units: [{
-                amount: { currency_code: 'EUR', value: amount },
-                description: `ColiVoyage Premium ${plan}`,
-                custom_id: userId || 'anonymous'
-            }],
-            application_context: {
-                brand_name: 'ColiVoyage',
-                return_url: `${process.env.FRONTEND_URL}/?payment=success&method=paypal`,
-                cancel_url: `${process.env.FRONTEND_URL}/?payment=cancel`,
-                user_action: 'PAY_NOW'
-            }
-        });
+  try {
+    const { plan, userId } = req.body;
+    const amount = plan === 'monthly' ? '2.49' : '9.99';
 
-        const order = await paypalClient.execute(request);
-        res.json({ id: order.result.id, links: order.result.links, success: true });
-    } catch (error) {
-        console.error('PayPal error:', error);
-        res.status(500).json({ error: error.message });
+    const token = await getPayPalToken();
+
+    const response = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        intent: 'CAPTURE',
+        purchase_units: [{
+          amount: { currency_code: 'EUR', value: amount },
+          description: `ColiVoyage Premium ${plan}`,
+          custom_id: userId || 'anonymous'
+        }]
+      })
+    });
+
+    const order = await response.json();
+
+    // Sauvegarder dans Supabase si disponible
+    if (supabase && userId) {
+      await supabase.from('payments').insert({
+        user_id: userId,
+        method: 'paypal',
+        amount: parseFloat(amount),
+        currency: 'EUR',
+        plan: plan,
+        status: 'pending',
+        external_id: order.id
+      });
     }
-});
 
-app.post('/api/paypal/capture', async (req, res) => {
-    if (!paypalClient) return res.status(503).json({ error: 'PayPal non configuré' });
-    try {
-        const { orderId, userId, plan } = req.body;
-        const request = new paypal.orders.OrdersCaptureRequest(orderId);
-        request.requestBody({});
-        const capture = await paypalClient.execute(request);
+    res.json({
+      id: order.id,
+      links: order.links,
+      success: true
+    });
 
-        if (capture.result.status === 'COMPLETED' && supabase && userId) {
-            const premiumUntil = new Date();
-            if (plan === 'monthly') premiumUntil.setMonth(premiumUntil.getMonth() + 1);
-            else premiumUntil.setFullYear(premiumUntil.getFullYear() + 1);
-            await supabase.from('users').update({
-                is_premium: true, premium_plan: plan,
-                premium_since: new Date().toISOString(),
-                premium_until: premiumUntil.toISOString()
-            }).eq('id', userId);
-        }
-        res.json({ status: capture.result.status, success: true });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+  } catch (error) {
+    console.error('PayPal error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============================================
-// 👤 UTILISATEURS
+// PAYPAL - Capturer un paiement
+// ============================================
+app.post('/api/paypal/capture', async (req, res) => {
+  if (!PAYPAL_CLIENT_ID || !PAYPAL_SECRET) {
+    return res.status(503).json({ error: 'PayPal non configuré' });
+  }
+
+  try {
+    const { orderId, userId, plan } = req.body;
+    const token = await getPayPalToken();
+
+    const response = await fetch(
+      `${PAYPAL_BASE_URL}/v2/checkout/orders/${orderId}/capture`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+
+    const capture = await response.json();
+
+    if (capture.status === 'COMPLETED' && supabase && userId) {
+      const premiumUntil = new Date();
+      if (plan === 'monthly') {
+        premiumUntil.setMonth(premiumUntil.getMonth() + 1);
+      } else {
+        premiumUntil.setFullYear(premiumUntil.getFullYear() + 1);
+      }
+
+      await supabase.from('users').update({
+        is_premium: true,
+        premium_plan: plan,
+        premium_since: new Date().toISOString(),
+        premium_until: premiumUntil.toISOString()
+      }).eq('id', userId);
+
+      await supabase.from('payments').update({
+        status: 'completed'
+      }).eq('external_id', orderId);
+    }
+
+    res.json({
+      status: capture.status,
+      success: true
+    });
+
+  } catch (error) {
+    console.error('PayPal capture error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// UTILISATEURS
 // ============================================
 app.get('/api/user/:userId', async (req, res) => {
-    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
-    try {
-        const { data, error } = await supabase.from('users').select('*').eq('id', req.params.userId).single();
-        if (error) return res.status(404).json({ error: 'Non trouvé' });
-        res.json(data);
-    } catch (error) { res.status(500).json({ error: error.message }); }
+  if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', req.params.userId)
+      .single();
+    if (error) return res.status(404).json({ error: 'Non trouvé' });
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/user', async (req, res) => {
-    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
-    try {
-        const { data } = await supabase.from('users').insert(req.body).select().single();
-        res.json(data);
-    } catch (error) { res.status(500).json({ error: error.message }); }
+  if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+  try {
+    const { data } = await supabase.from('users').insert(req.body).select().single();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============================================
-// ✈️ TRAJETS
+// TRAJETS
 // ============================================
 app.get('/api/trajets', async (req, res) => {
-    if (!supabase) return res.json([]);
-    try {
-        const { data } = await supabase.from('trajets').select('*').eq('is_active', true);
-        res.json(data || []);
-    } catch (error) { res.status(500).json({ error: error.message }); }
+  if (!supabase) return res.json([]);
+  try {
+    const { data } = await supabase.from('trajets').select('*').eq('is_active', true);
+    res.json(data || []);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/trajets', async (req, res) => {
-    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
-    try {
-        const { data } = await supabase.from('trajets').insert(req.body).select().single();
-        res.json(data);
-    } catch (error) { res.status(500).json({ error: error.message }); }
+  if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+  try {
+    const { data } = await supabase.from('trajets').insert(req.body).select().single();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============================================
-// 📦 COLIS
+// COLIS
 // ============================================
 app.get('/api/colis', async (req, res) => {
-    if (!supabase) return res.json([]);
-    try {
-        const { data } = await supabase.from('colis').select('*').eq('status', 'en_attente');
-        res.json(data || []);
-    } catch (error) { res.status(500).json({ error: error.message }); }
+  if (!supabase) return res.json([]);
+  try {
+    const { data } = await supabase.from('colis').select('*').eq('status', 'en_attente');
+    res.json(data || []);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/colis', async (req, res) => {
-    if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
-    try {
-        const { data } = await supabase.from('colis').insert(req.body).select().single();
-        res.json(data);
-    } catch (error) { res.status(500).json({ error: error.message }); }
+  if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
+  try {
+    const { data } = await supabase.from('colis').insert(req.body).select().single();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============================================
-// 🚀 DÉMARRAGE
+// DÉMARRAGE SERVEUR
 // ============================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 ColiVoyage Backend running on port ${PORT}`);
-    console.log(`📡 Environment: ${process.env.NODE_ENV || 'production'}`);
+  console.log('');
+  console.log('╔══════════════════════════════════════╗');
+  console.log('║   🚀 ColiVoyage Backend v2.0.0       ║');
+  console.log(`║   Port: ${PORT}                          ║`);
+  console.log('╚══════════════════════════════════════╝');
+  console.log(`💾 Supabase: ${supabaseStatus}`);
+  console.log(`🅿️  PayPal:  ${paypalStatus}`);
+  console.log('');
 });
