@@ -33,16 +33,16 @@ const paypalEnv = process.env.PAYPAL_MODE === 'live'
 const paypalClient = new paypal.core.PayPalHttpClient(paypalEnv);
 
 // ============================================
-// 📧 RESEND CONFIGURATION
+// 📧 BREVO CONFIGURATION
 // ============================================
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-let resendStatus = '❌ Non configuré';
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+let brevoStatus = '❌ Non configuré';
 
-if (RESEND_API_KEY) {
-    resendStatus = '✅ Configuré';
-    console.log('✅ Resend configuré');
+if (BREVO_API_KEY) {
+    brevoStatus = '✅ Configuré';
+    console.log('✅ Brevo configuré');
 } else {
-    console.log('⚠️ Resend non configuré');
+    console.log('⚠️ Brevo non configuré');
 }
 
 // ============================================
@@ -82,11 +82,11 @@ app.get('/api/health', (req, res) => {
 });
 
 // ============================================
-// 📧 LOGIN PAR EMAIL - Code via RESEND
+// 📧 LOGIN PAR EMAIL - Code via BREVO
 // ============================================
 app.post('/api/auth/email', async (req, res) => {
     if (!supabase) return res.status(503).json({ error: 'DB non configurée' });
-    if (!RESEND_API_KEY) return res.status(503).json({ error: 'Resend non configuré' });
+    if (!BREVO_API_KEY) return res.status(503).json({ error: 'Brevo non configuré' });
     
     try {
         const { email } = req.body;
@@ -95,9 +95,11 @@ app.post('/api/auth/email', async (req, res) => {
             return res.status(400).json({ error: 'Email invalide' });
         }
         
+        // Générer un code à 6 chiffres
         const code = Math.floor(100000 + Math.random() * 900000).toString();
         console.log(`📧 Génération code pour ${email}: ${code}`);
         
+        // Sauvegarder le code
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
         
         await supabase.from('otp_codes').insert({
@@ -107,17 +109,24 @@ app.post('/api/auth/email', async (req, res) => {
             used: false
         });
         
-        const emailResponse = await fetch('https://api.resend.com/emails', {
+        // Envoyer l'email via BREVO
+        const emailResponse = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${RESEND_API_KEY}`
+                'accept': 'application/json',
+                'api-key': BREVO_API_KEY
             },
             body: JSON.stringify({
-                from: 'ColiVoyage <onboarding@resend.dev>',
-                to: [email],
+                sender: {
+                    name: 'ColiVoyage',
+                    email: 'ibnyaminahamadamnemoi@gmail.com'  // Ton email vérifié Brevo
+                },
+                to: [{
+                    email: email
+                }],
                 subject: `🔐 Ton code ColiVoyage : ${code}`,
-                html: `
+                htmlContent: `
                     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
                         <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border-radius: 12px 12px 0 0;">
                             <h1 style="color: white; margin: 0;">✈️ ColiVoyage</h1>
@@ -133,6 +142,12 @@ app.post('/api/auth/email', async (req, res) => {
                             <p style="color: #666; font-size: 14px;">
                                 ⏱️ Ce code expire dans <strong>10 minutes</strong>.
                             </p>
+                            <p style="color: #999; font-size: 12px; margin-top: 30px;">
+                                Si tu n'as pas demandé ce code, ignore cet email.
+                            </p>
+                        </div>
+                        <div style="text-align: center; padding: 20px; color: #999; font-size: 12px;">
+                            © 2026 ColiVoyage - Transport de colis entre particuliers
                         </div>
                     </div>
                 `
@@ -142,11 +157,11 @@ app.post('/api/auth/email', async (req, res) => {
         const emailData = await emailResponse.json();
         
         if (!emailResponse.ok) {
-            console.error('❌ Erreur Resend:', emailData);
+            console.error('❌ Erreur Brevo:', emailData);
             return res.status(500).json({ error: 'Erreur envoi email' });
         }
         
-        console.log('✅ Email envoyé:', emailData.id);
+        console.log('✅ Email envoyé via Brevo:', emailData.messageId);
         res.json({ success: true, message: 'Code envoyé ! 📧' });
         
     } catch (error) {
