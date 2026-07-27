@@ -56,7 +56,7 @@ app.get('/', (req, res) => {
         services: {
             supabase: process.env.SUPABASE_URL ? '✅ Connected' : '❌ Not configured',
             paypal: process.env.PAYPAL_CLIENT_ID ? '✅ Configured' : '❌ Not configured',
-            resend: resendStatus
+            brevo: brevoStatus
         },
         endpoints: [
             'GET /',
@@ -95,11 +95,9 @@ app.post('/api/auth/email', async (req, res) => {
             return res.status(400).json({ error: 'Email invalide' });
         }
         
-        // Générer un code à 6 chiffres
         const code = Math.floor(100000 + Math.random() * 900000).toString();
         console.log(`📧 Génération code pour ${email}: ${code}`);
         
-        // Sauvegarder le code
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
         
         await supabase.from('otp_codes').insert({
@@ -109,7 +107,6 @@ app.post('/api/auth/email', async (req, res) => {
             used: false
         });
         
-        // Envoyer l'email via BREVO
         const emailResponse = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
@@ -120,11 +117,9 @@ app.post('/api/auth/email', async (req, res) => {
             body: JSON.stringify({
                 sender: {
                     name: 'ColiVoyage',
-                    email: 'ibnyaminahamadamnemoi@gmail.com'  // Ton email vérifié Brevo
+                    email: 'ibnyaminahamadamnemoi@gmail.com'
                 },
-                to: [{
-                    email: email
-                }],
+                to: [{ email: email }],
                 subject: `🔐 Ton code ColiVoyage : ${code}`,
                 htmlContent: `
                     <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
@@ -467,6 +462,6 @@ app.listen(PORT, () => {
     console.log(`📡 Frontend URL: ${process.env.FRONTEND_URL || 'Not set'}`);
     console.log(`💾 Supabase: ${process.env.SUPABASE_URL ? '✅ Connected' : '❌ Not configured'}`);
     console.log(`🅿️  PayPal:  ${process.env.PAYPAL_CLIENT_ID ? '✅ Configured' : '❌ Not configured'}`);
-    console.log(`📧 Resend:  ${resendStatus}`);
+    console.log(`📧 Brevo:    ${brevoStatus}`);
     console.log('');
 });
